@@ -1,0 +1,6 @@
+body { font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; background:#f3f4f6; margin:0; padding:24px; }
+.card { max-width:780px; margin:16px auto; background:#fff; padding:20px; border-radius:12px; box-shadow:0 8px 30px rgba(2,6,23,0.08); }
+input[type="text"], input { width:100%; padding:10px; font-size:16px; border-radius:8px; border:1px solid #e6e6e9 }
+button { padding:8px 12px; font-size:15px; border-radius:8px; margin-right:8px; cursor:pointer; }
+.pairing { margin-top:12px; font-size:15px; }
+.log { margin-top:10px; max-height:340px; overflow:auto; background:#0b1220; color:#d7e9ff; padding:12px; border-radius:8px; font-family: monospace; font-size:13px }
