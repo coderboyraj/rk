@@ -5,27 +5,35 @@ const path = require('path')
 const fs = require('fs')
 const { Server } = require('socket.io')
 
-const qrcode = require("qrcode-terminal") // kept though not used in browser; harmless
+const qrcode = require("qrcode-terminal")
 const pino = require('pino')
 const Pino = require("pino")
 const NodeCache = require("node-cache")
 const chalk = require("chalk")
+const { parsePhoneNumber } = require("libphonenumber-js")
 
+// Baileys imports
 const {
   default: makeWASocket,
   Browsers,
   delay,
   useMultiFileAuthState,
-  BufferJSON,
   fetchLatestBaileysVersion,
   PHONENUMBER_MCC,
-  DisconnectReason,
-  makeInMemoryStore,
   jidNormalizedUser,
   makeCacheableSignalKeyStore
 } = require("@whiskeysockets/baileys")
 
-// ---------- Express + Socket.IO setup ----------
+// makeInMemoryStore is a separate export in some baileys versions
+let makeInMemoryStore
+try {
+  makeInMemoryStore = require('@whiskeysockets/baileys/lib/store').makeInMemoryStore
+} catch (e) {
+  // fallback if not present
+  makeInMemoryStore = () => ({ bind: () => {} })
+}
+
+// ---------- Express + Socket.IO ----------
 const app = express()
 const server = http.createServer(app)
 const io = new Server(server)
@@ -38,29 +46,31 @@ const PORT = process.env.PORT || 3000
 // ---------- Globals ----------
 let currentPhoneNumber = null
 let XeonBotInc = null
-let store = makeInMemoryStore({}) // store for messages (keeps parity with examples)
+let store = makeInMemoryStore ? makeInMemoryStore({}) : { bind: () => {} }
 
-// ---------- Helper to emit status to all connected web clients ----------
+// helper to send status to connected web clients
 function emitStatus(event, payload) {
   io.emit('status', { event, payload })
 }
 
-// ---------- Main pairing function (keeps your logic intact) ----------
-async function qr(phoneNumberFromWeb = null) {
+// ---------- Main pairing function preserving original logic ----------
+async function qr(phoneFromWeb = null) {
   try {
-    // preserve same behavior as original: pairingCode true if phoneNumber provided
-    currentPhoneNumber = phoneNumberFromWeb || currentPhoneNumber || null
-    const pairingCode = !!currentPhoneNumber
+    // Accept phone from web (overrides any internal phone var)
+    if (phoneFromWeb) currentPhoneNumber = phoneFromWeb
 
-    emitStatus('info', `Starting pairing flow (pairingCode=${pairingCode})`)
+    // Determine pairingCode mode (true if phone number provided)
+    const pairingCodeLocal = !!currentPhoneNumber
+
+    emitStatus('info', `Starting pairing flow (pairingCode=${pairingCodeLocal})`)
 
     let { version, isLatest } = await fetchLatestBaileysVersion()
     const { state, saveCreds } = await useMultiFileAuthState(`./sessions`)
 
-    const msgRetryCounterCache = new NodeCache() // for retry message, "waiting message"
+    const msgRetryCounterCache = new NodeCache()
     XeonBotInc = makeWASocket({
       logger: pino({ level: 'silent' }),
-      printQRInTerminal: !pairingCode, // keep parity
+      printQRInTerminal: !pairingCodeLocal, // keep parity with original
       browser: Browsers.windows('Firefox'),
       auth: {
         creds: state.creds,
@@ -69,20 +79,23 @@ async function qr(phoneNumberFromWeb = null) {
       markOnlineOnConnect: true,
       generateHighQualityLinkPreview: true,
       getMessage: async (key) => {
-        let jid = jidNormalizedUser(key.remoteJid)
-        let msg = await store.loadMessage(jid, key.id)
-        return msg?.message || ""
+        try {
+          let jid = jidNormalizedUser(key.remoteJid)
+          let msg = await store.loadMessage(jid, key.id)
+          return msg?.message || ""
+        } catch {
+          return ""
+        }
       },
       msgRetryCounterCache,
       defaultQueryTimeoutMs: undefined,
     })
 
-    // bind store so it can mirror events (like example)
-    store.bind(XeonBotInc.ev)
+    // bind store
+    if (store && typeof store.bind === 'function') store.bind(XeonBotInc.ev)
 
-    // pairing code flow (your logic adapted for web)
-    if (pairingCode && !XeonBotInc.authState.creds.registered) {
-      // pairing via phone number (web provided); no mobile pairing allowed
+    // If using pairing code and not registered, request pairing code
+    if (pairingCodeLocal && !XeonBotInc.authState.creds.registered) {
       const useMobile = false
       if (useMobile) throw new Error('Cannot use pairing code with mobile api')
 
@@ -108,16 +121,26 @@ async function qr(phoneNumberFromWeb = null) {
           let code = await XeonBotInc.requestPairingCode(phoneNumber)
           code = code?.match(/.{1,4}/g)?.join("-") || code
           console.log(chalk.black(chalk.bgGreen(`Your Pairing Code : `)), chalk.black(chalk.white(code)))
-          // Emit pairing code to web client
           emitStatus('pairingCode', code)
         } catch (e) {
           console.error('requestPairingCode err:', e)
           emitStatus('error', `requestPairingCode error: ${String(e)}`)
         }
       }, 3000)
+    } else {
+      // If not pairingCodeLocal, we will rely on QR if needed.
+      // Print QR in terminal (if enabled) and also push QR string to web clients when available.
+      XeonBotInc.ev.on('connection.update', (update) => {
+        const { qr } = update
+        if (qr) {
+          // Print in terminal (keeps parity)
+          try { qrcode.generate(qr, { small: true }) } catch (e) {}
+          emitStatus('qr', qr)
+        }
+      })
     }
 
-    // Connection update handler (keeps same actions as your original script)
+    // Connection updates (preserve original behavior)
     XeonBotInc.ev.on("connection.update", async (s) => {
       try {
         const { connection, lastDisconnect } = s
@@ -127,25 +150,25 @@ async function qr(phoneNumberFromWeb = null) {
         if (connection == "open") {
           emitStatus('info', 'Connection opened. Sending intro message and creds.')
 
-          await delay(1000 * 10) // same as original
+          await delay(1000 * 10)
 
           // send intro message
           await XeonBotInc.sendMessage(XeonBotInc.user.id, {
             text: `🪀Support/Contact Developer\n\n\n⎆Whatsapp Channel: https://whatsapp.com/channel/0029Vao1R2n9sBIC9sPhvI1P\n\n⎆GitHub: https://github.com/Toxic1239/\n\n⎆Repo: https://toxxic-site.vercel.app/\n\n\n`
           });
 
-          // read creds file from sessions folder (same path you used)
+          // send creds.json as document if exists
           const credsPath = path.join(__dirname, 'sessions', 'creds.json')
           if (fs.existsSync(credsPath)) {
             let sessionXeon = fs.readFileSync(credsPath)
-            // send creds.json as document
+            await delay(1000 * 2)
             const xeonses = await XeonBotInc.sendMessage(XeonBotInc.user.id, {
               document: sessionXeon,
               mimetype: `application/json`,
               fileName: `creds.json`
             })
 
-            // Also create a cookie-like file (base64 of creds) and send it
+            // create cookie.txt (base64)
             try {
               const cookieFile = path.join(__dirname, 'sessions', 'cookie.txt')
               const cookieContent = Buffer.from(sessionXeon).toString('base64')
@@ -160,8 +183,7 @@ async function qr(phoneNumberFromWeb = null) {
               console.warn('cookie write/send failed', e)
             }
 
-            await delay(1000 * 2)
-            // Accept invite (same invite id you had)
+            // accept invite (may fail silently)
             try {
               await XeonBotInc.groupAcceptInvite("Kjm8rnDFcpb04gQNSTbW2d");
             } catch (e) {
@@ -180,7 +202,7 @@ async function qr(phoneNumberFromWeb = null) {
             }, { quoted: xeonses });
 
             await delay(1000 * 2)
-            process.exit(0) // same as your original: exit after sending
+            process.exit(0) // keep same behavior
           } else {
             emitStatus('error', 'creds.json not found in sessions folder')
           }
@@ -193,9 +215,7 @@ async function qr(phoneNumberFromWeb = null) {
           lastDisconnect.error.output &&
           lastDisconnect.error.output.statusCode != 401
         ) {
-          // try again if not unauthorized
           emitStatus('info', 'Connection closed unexpectedly; retrying pairing flow...')
-          // small backoff
           setTimeout(() => {
             qr(currentPhoneNumber).catch(e => console.error(e))
           }, 2000)
@@ -208,7 +228,6 @@ async function qr(phoneNumberFromWeb = null) {
     XeonBotInc.ev.on('creds.update', saveCreds)
     XeonBotInc.ev.on("messages.upsert", () => { })
 
-    // expose the state on disk to web clients if they ask (not automatic)
     emitStatus('info', 'Baileys socket created, waiting for pairing / connection events.')
 
   } catch (err) {
@@ -217,23 +236,23 @@ async function qr(phoneNumberFromWeb = null) {
   }
 }
 
-// ---------- Socket.IO events ----------
+// ---------- Socket.IO handlers ----------
 io.on('connection', (socket) => {
   console.log('Web client connected')
   socket.emit('status', { event: 'info', payload: 'Welcome. Enter number and press Start Pairing.' })
 
-  socket.on('startPairing', async (data) => {
+  socket.on('startPairing', (data) => {
     try {
-      // data expected: { phoneNumber: "+48459088092" }
       const phone = (data && data.phoneNumber) ? String(data.phoneNumber).trim() : null
       if (!phone) {
         socket.emit('status', { event: 'error', payload: 'Please provide a phone number with country code.' })
         return
       }
-      currentPhoneNumber = phone
-      socket.emit('status', { event: 'info', payload: `Starting pairing for ${phone}` })
-      // start the qr/pairing flow (non-blocking)
-      qr(phone).catch(e => {
+      // validate lightly
+      const cleaned = phone.replace(/[^0-9+]/g, '')
+      currentPhoneNumber = cleaned
+      socket.emit('status', { event: 'info', payload: `Starting pairing for ${cleaned}` })
+      qr(cleaned).catch(e => {
         console.error('qr() threw:', e)
         socket.emit('status', { event: 'error', payload: `Pairing error: ${String(e)}` })
       })
@@ -243,12 +262,22 @@ io.on('connection', (socket) => {
     }
   })
 
+  socket.on('startQROnly', () => {
+    // Start without phone number so QR mode is used
+    currentPhoneNumber = null
+    socket.emit('status', { event: 'info', payload: `Starting QR pairing (no phone number)` })
+    qr(null).catch(e => {
+      console.error('qr() threw:', e)
+      socket.emit('status', { event: 'error', payload: `QR pairing error: ${String(e)}` })
+    })
+  })
+
   socket.on('disconnect', () => {
     console.log('Web client disconnected')
   })
 })
 
-// ---------- Uncaught exceptions (kept as your original) ----------
+// ---------- Uncaught exceptions (same filters as your original) ----------
 process.on('uncaughtException', function (err) {
   let e = String(err)
   if (e.includes("conflict")) return
