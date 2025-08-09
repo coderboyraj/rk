@@ -1,0 +1,84 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Baileys Pairing (Web)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; margin: 0; padding: 20px; background:#f7f7f8;}
+    .card { max-width:720px; margin: 20px auto; background: #fff; padding: 18px; border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.06); }
+    input[type="text"]{ width:100%; padding:10px; font-size:16px; border-radius:8px; border:1px solid #ddd }
+    button{ padding:10px 14px; font-size:16px; border-radius:8px; cursor:pointer; }
+    .pairing { margin-top: 12px; font-weight:700; font-size:20px; }
+    .log { margin-top:10px; max-height:260px; overflow:auto; background:#0f1724; color:#e6eef8; padding:12px; border-radius:8px; font-family: monospace; font-size:13px }
+    .pairing-code { display:inline-block; padding:6px 10px; border-radius:8px; background:#0ea5e9; color:white; margin-left:8px; font-weight:700; letter-spacing:2px}
+    .small { font-size:13px; color:#666; margin-top:8px }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>WhatsApp Pairing (web)</h2>
+    <p class="small">Enter your WhatsApp number with country code (e.g. +48459088092) and click <strong>Start Pairing</strong>.</p>
+
+    <label>Phone number</label>
+    <input id="phone" placeholder="+48459088092" />
+
+    <div style="margin-top:10px">
+      <button id="startBtn">Start Pairing</button>
+    </div>
+
+    <div class="pairing">Pairing code: <span id="pairingCode" class="pairing-code">—</span></div>
+
+    <div class="small">Connection status: <span id="conn">idle</span></div>
+
+    <div class="log" id="log"></div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io()
+    const startBtn = document.getElementById('startBtn')
+    const pairingEl = document.getElementById('pairingCode')
+    const logEl = document.getElementById('log')
+    const connEl = document.getElementById('conn')
+    const phoneEl = document.getElementById('phone')
+
+    function log(type, msg) {
+      const now = new Date().toLocaleTimeString()
+      logEl.innerHTML = `<div>[${now}] ${type}: ${msg}</div>` + logEl.innerHTML
+    }
+
+    startBtn.addEventListener('click', () => {
+      const phone = phoneEl.value.trim()
+      if (!phone) {
+        alert('Enter phone number with country code (eg +48459088092)')
+        return
+      }
+      socket.emit('startPairing', { phoneNumber: phone })
+      log('client', `Started pairing for ${phone}`)
+    })
+
+    socket.on('connect', () => {
+      log('socket', 'connected to server')
+    })
+
+    socket.on('status', (data) => {
+      const { event, payload } = data
+      if (event === 'pairingCode') {
+        pairingEl.textContent = payload
+        log('pair', `Pairing code: ${payload}`)
+      } else if (event === 'connection') {
+        connEl.textContent = payload
+        log('conn', `connection state: ${payload}`)
+      } else if (event === 'info') {
+        log('info', payload)
+      } else if (event === 'error') {
+        log('error', payload)
+      } else {
+        log(event, payload)
+      }
+    })
+  </script>
+</body>
+  </html>
+  
